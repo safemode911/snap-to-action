@@ -50,6 +50,7 @@
     </div>
   </div>
 
+<script src="ics.js"></script>
 <script>
 const CONFIDENCE_THRESHOLD = 0.92;
 
@@ -141,21 +142,13 @@ function toggleItem(i) {
   renderSplitSummary();
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 function downloadICS() {
   const d = currentData;
-  const fmt = iso => iso.replace(/[-:]/g, "").split(".")[0] + "Z";
-  const ics = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//SnapToAction//Deterministic//EN",
-    "BEGIN:VEVENT",
-    `DTSTART:${fmt(d.startISO)}`,
-    `DTEND:${fmt(d.endISO)}`,
-    `SUMMARY:${d.title}`,
-    `LOCATION:${d.location}`,
-    "END:VEVENT",
-    "END:VCALENDAR"
-  ].join("\r\n");
+  const ics = SnapICS.buildICS(d);
   const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -203,10 +196,10 @@ function runPipeline() {
     }
     out.innerHTML = html;
   } else if (currentData.intent === "event") {
-    const validStart = !isNaN(Date.parse(currentData.startISO));
-    const validEnd = !isNaN(Date.parse(currentData.endISO));
-    if (!validStart || !validEnd) {
-      out.innerHTML = `<span class="badge err">DATE VALIDATION FAILED</span><p>Invalid ISO-8601 date detected. Refusing to generate broken .ics file.</p>`;
+    const { errors } = SnapICS.validateEvent(currentData);
+    if (errors.length) {
+      out.innerHTML = `<span class="badge err">DATE VALIDATION FAILED</span><p>Refusing to generate broken .ics file.</p>` +
+        errors.map(err => `<div class="alert fail">${escapeHtml(err)}</div>`).join("");
       return;
     }
     out.innerHTML = `
