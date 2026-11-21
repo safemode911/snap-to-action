@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Snap-to-Action — Zero-Prompt Deterministic Prototype</title>
+  <style>
+    :root { --bg: #0b0d12; --card: #151923; --border: #262c3d; --text: #e8ecf3; --muted: #8b95ab; --accent: #4f8cff; --ok: #22c55e; --warn: #f59e0b; --err: #ef4444; }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; background: var(--bg); color: var(--text); padding: 24px 16px; display: flex; justify-content: center; }
+    .wrap { width: 100%; max-width: 780px; display: grid; gap: 16px; }
+    h1 { margin: 0; font-size: 1.4rem; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button { background: var(--accent); color: #fff; border: 0; padding: 9px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    button.sec { background: #232a3b; color: var(--text); }
+    button.warn { background: var(--warn); color: #111; }
+    textarea { width: 100%; min-height: 150px; background: #0e1118; color: #b7d5ff; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
+    .ok { background: rgba(34,197,94,.15); color: var(--ok); }
+    .err { background: rgba(239,68,68,.15); color: var(--err); }
+    .warn-b { background: rgba(245,158,11,.15); color: var(--warn); }
+    .item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .alert { border-left: 3px solid var(--warn); background: rgba(245,158,11,.08); padding: 10px 12px; border-radius: 6px; margin: 10px 0; font-size: 0.85rem; }
+    .alert.fail { border-color: var(--err); background: rgba(239,68,68,.08); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <h1>Snap-to-Action AI</h1>
+      <div class="sub">LLM = Constrained JSON Parser Only &bull; Code = Deterministic Checksum &amp; Artifact Builder</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom: 10px;">
+        <button onclick="loadSample('receipt_bad')">Drop Receipt (OCR Glitch Demo)</button>
+        <button class="sec" onclick="loadSample('receipt_ok')">Drop Clean Receipt</button>
+        <button class="sec" onclick="loadSample('event')">Drop Event Poster</button>
+      </div>
+      <textarea id="jsonInput" spellcheck="false"></textarea>
+      <div class="row" style="margin-top: 10px;">
+        <button onclick="runPipeline()">Run Deterministic Pipeline</button>
+      </div>
+    </div>
+
+    <div class="card" id="output">
+      <div class="sub">Select a sample input above to simulate zero-prompt intent routing, checksum verification, and artifact generation.</div>
+    </div>
+  </div>
+
+<script>
+const CONFIDENCE_THRESHOLD = 0.92;
+
+const SAMPLES = {
+  receipt_bad: {
+    intent: "receipt",
+    merchant: "Noodle House",
+    currency: "USD",
+    items: [
+      { name: "Spicy Ramen", price: 16.00, confidence: 0.98 },
+      { name: "Pork Gyoza", price: 9.00, confidence: 0.81 }, // shaky OCR field
+      { name: "Matcha Iced Tea", price: 5.50, confidence: 0.97 }
+    ],
+    tax: 2.75,
+    tip: 4.75,
+    total: 39.00 // intentional $1.00 checksum mismatch (real sum = 38.00)
+  },
+  receipt_ok: {
+    intent: "receipt",
+    merchant: "Blue Bottle Coffee",
+    currency: "USD",
+    items: [
+      { name: "Oat Latte", price: 6.50, confidence: 0.99 },
+      { name: "Cold Brew", price: 5.50, confidence: 0.98 },
+      { name: "Almond Croissant", price: 5.00, confidence: 0.96 }
+    ],
+    tax: 1.50,
+    tip: 2.50,
+    total: 21.00
+  },
+  event: {
+    intent: "event",
+    title: "Devin Demo Day & Pitch",
+    startISO: "2026-12-01T18:00:00Z",
+    endISO: "2026-12-01T20:00:00Z",
+    location: "San Francisco, CA",
+    confidence: 0.97
+  }
+};
+
+let currentData = null;
+let selectedIdx = new Set();
+
+function loadSample(key) {
+  document.getElementById("jsonInput").value = JSON.stringify(SAMPLES[key], null, 2);
+  runPipeline();
+}
+
+function validateReceipt(d) {
+  const errors = [];
+  const shaky = [];
+  if (!Array.isArray(d.items) || typeof d.total !== "number") {
+    errors.push("Schema violation: missing items array or numeric total.");
+    return { errors, shaky, expectedTotal: 0 };
+  }
+  const subtotal = d.items.reduce((s, it, idx) => {
+    if ((it.confidence ?? 1) < CONFIDENCE_THRESHOLD) {
+      shaky.push({ idx, field: it.name, value: it.price, confidence: it.confidence });
+    }
+    return s + Number(it.price || 0);
+  }, 0);
+  const expectedTotal = +(subtotal + Number(d.tax || 0) + Number(d.tip || 0)).toFixed(2);
+  const diff = +(d.total - expectedTotal).toFixed(2);
+  if (Math.abs(diff) > 0.01) {
+    errors.push(`Checksum failed: items ($${subtotal.toFixed(2)}) + tax ($${d.tax}) + tip ($${d.tip}) = $${expectedTotal.toFixed(2)}, but receipt total is $${d.total.toFixed(2)} (diff: $${diff}).`);
+  }
+  return { errors, shaky, subtotal, expectedTotal };
+}
+
+function applyOneTapFix(expectedTotal) {
+  currentData.total = expectedTotal;
+  currentData.items.forEach(i => { if (i.confidence < CONFIDENCE_THRESHOLD) i.confidence = 1.0; });
+  document.getElementById("jsonInput").value = JSON.stringify(currentData, null, 2);
+  runPipeline();
+}
+
+function renderSplitSummary() {
+  const d = currentData;
+  const subtotal = d.items.reduce((s, it) => s + it.price, 0);
+  const picked = d.items.reduce((s, it, i) => selectedIdx.has(i) ? s + it.price : s, 0);
+  const ratio = subtotal > 0 ? picked / subtotal : 0;
+  const share = picked + (d.tax + d.tip) * ratio;
+  document.getElementById("splitOut").innerHTML =
+    `Selected items: <b>$${picked.toFixed(2)}</b> + proportional tax/tip &rarr; <b>Your Share: $${share.toFixed(2)}</b>`;
+}
+
+function toggleItem(i) {
+  selectedIdx.has(i) ? selectedIdx.delete(i) : selectedIdx.add(i);
+  renderSplitSummary();
+}
+
+function downloadICS() {
+  const d = currentData;
+  const fmt = iso => iso.replace(/[-:]/g, "").split(".")[0] + "Z";
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//SnapToAction//Deterministic//EN",
+    "BEGIN:VEVENT",
+    `DTSTART:${fmt(d.startISO)}`,
+    `DTEND:${fmt(d.endISO)}`,
+    `SUMMARY:${d.title}`,
+    `LOCATION:${d.location}`,
+    "END:VEVENT",
+    "END:VCALENDAR"
+  ].join("\r\n");
+  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${d.title.toLowerCase().replace(/\W+/g, "-")}.ics`;
+  a.click();
+}
+
+function runPipeline() {
+  const out = document.getElementById("output");
+  try {
+    currentData = JSON.parse(document.getElementById("jsonInput").value);
+  } catch (e) {
+    out.innerHTML = `<span class="badge err">SCHEMA ERROR</span><p>${e.message}</p>`;
+    return;
+  }
+
+  if (currentData.intent === "receipt") {
+    const v = validateReceipt(currentData);
+    selectedIdx = new Set();
+    let html = `<div class="row" style="justify-content:space-between;">
+      <strong>Intent: Receipt &rarr; Interactive Split-Bill (${currentData.merchant})</strong>
+      <span class="badge ${v.errors.length || v.shaky.length ? "err" : "ok"}">
+        ${v.errors.length || v.shaky.length ? "VALIDATION HALTED" : "CHECKSUM VERIFIED"}
+      </span>
+    </div>`;
+
+    v.errors.forEach(err => {
+      html += `<div class="alert fail">${err}</div>`;
+    });
+    v.shaky.forEach(s => {
+      html += `<div class="alert">Low confidence (${Math.round(s.confidence * 100)}%) on <b>${s.field}</b> ($${s.value}). Zero guessing—confirm field before finalizing.</div>`;
+    });
+
+    if (v.errors.length || v.shaky.length) {
+      html += `<button class="warn" onclick="applyOneTapFix(${v.expectedTotal})">1-Tap Fix: Confirm Items &amp; Sync Total to $${v.expectedTotal.toFixed(2)}</button>`;
+    } else {
+      html += `<p class="sub">Tap your items to calculate proportional split (including tax &amp; tip):</p>`;
+      currentData.items.forEach((it, i) => {
+        html += `<label class="item">
+          <span><input type="checkbox" onchange="toggleItem(${i})" /> ${it.name}</span>
+          <span>$${it.price.toFixed(2)}</span>
+        </label>`;
+      });
+      html += `<div id="splitOut" style="margin-top:12px;">Select items above to compute your share.</div>`;
+    }
+    out.innerHTML = html;
+  } else if (currentData.intent === "event") {
+    const validStart = !isNaN(Date.parse(currentData.startISO));
+    const validEnd = !isNaN(Date.parse(currentData.endISO));
+    if (!validStart || !validEnd) {
+      out.innerHTML = `<span class="badge err">DATE VALIDATION FAILED</span><p>Invalid ISO-8601 date detected. Refusing to generate broken .ics file.</p>`;
+      return;
+    }
+    out.innerHTML = `
+      <div class="row" style="justify-content:space-between;">
+        <strong>Intent: Event Poster &rarr; Deterministic .ICS Builder</strong>
+        <span class="badge ok">SCHEMA &amp; DATES VERIFIED</span>
+      </div>
+      <p><b>${currentData.title}</b><br/>${currentData.location}<br/><span class="sub">${currentData.startISO} &rarr; ${currentData.endISO}</span></p>
+      <button onclick="downloadICS()">Download Ready-to-Import .ics File</button>
+    `;
+  } else {
+    out.innerHTML = `<span class="badge warn-b">UNKNOWN INTENT</span><p>Supported strict schemas: <code>receipt</code>, <code>event</code>.</p>`;
+  }
+}
+
+loadSample("receipt_bad");
+</script>
+</body>
+</html>
