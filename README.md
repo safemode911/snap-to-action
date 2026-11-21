@@ -13,3 +13,10 @@ The LLM never generates the final artifact. It acts strictly as an intent router
 
 ## Run Prototype
 Open `index.html` directly in any browser (zero dependencies) or view via GitHub Pages.
+
+## Tests
+The `.ics` builder lives in `ics.js` (also loaded by `index.html`). Run its tests with Node 20+ (no dependencies):
+
+```sh
+node --test
+```
